@@ -1,0 +1,121 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+  kafka-setup:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on:
+      kafka:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c "
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic transactions --partitions 1 --replication-factor 1 &&
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic fraud-alerts --partitions 1 --replication-factor 1 &&
+      echo 'Kafka topics ready';
+      sleep 2"
+    restart: "no"
+
+  kafka-producer:
+    build:
+      context: ./kafka-producer
+    depends_on:
+      kafka-setup:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: transactions
+      PRODUCER_INTERVAL_SECONDS: 2
+    restart: unless-stopped
+
+  jobmanager:
+    build:
+      context: ./flink-processor
+    depends_on:
+      kafka-setup:
+        condition: service_completed_successfully
+    ports:
+      - "8081:8081"
+      - "6123:6123"
+    command: jobmanager
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SOURCE_TOPIC: transactions
+      KAFKA_SINK_TOPIC: fraud-alerts
+      FRAUD_THRESHOLD: "5000"
+      JOB_MANAGER_RPC_ADDRESS: jobmanager
+      JAVA_TOOL_OPTIONS: >
+        -Dlog4j.configuration=file:///opt/flink/conf/log4j.properties
+    volumes:
+      - ./flink-processor/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
+      - ./flink-processor/src:/opt/flink/usrlib:ro
+      - flink-checkpoints:/flink-checkpoints
+      - flink-savepoints:/flink-savepoints
+    hostname: jobmanager
+    restart: unless-stopped
+
+  taskmanager:
+    build:
+      context: ./flink-processor
+    depends_on:
+      jobmanager:
+        condition: service_started
+    command: taskmanager
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SOURCE_TOPIC: transactions
+      KAFKA_SINK_TOPIC: fraud-alerts
+      FRAUD_THRESHOLD: "5000"
+      JOB_MANAGER_RPC_ADDRESS: jobmanager
+      JAVA_TOOL_OPTIONS: >
+        -Dlog4j.configuration=file:///opt/flink/conf/log4j.properties
+    volumes:
+      - ./flink-processor/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
+      - ./flink-processor/src:/opt/flink/usrlib:ro
+      - flink-checkpoints:/flink-checkpoints
+      - flink-savepoints:/flink-savepoints
+    hostname: taskmanager
+    restart: unless-stopped
+
+  job-submitter:
+    build:
+      context: ./flink-processor
+    depends_on:
+      jobmanager:
+        condition: service_started
+      taskmanager:
+        condition: service_started
+    command: python3 /opt/flink/usrlib/submit_job.py
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SOURCE_TOPIC: transactions
+      KAFKA_SINK_TOPIC: fraud-alerts
+      FRAUD_THRESHOLD: "5000"
+    volumes:
+      - ./flink-processor/src:/opt/flink/usrlib:ro
+    restart: "no"
+
+volumes:
+  flink-checkpoints:
+  flink-savepoints:
+
+networks:
+  default:
+    name: flink-pipeline-net

@@ -1,0 +1,18 @@
+jobmanager.rpc.address: jobmanager
+jobmanager.rpc.port: 6123
+jobmanager.rpc.bind-address: 0.0.0.0
+jobmanager.bind-host: 0.0.0.0
+jobmanager.memory.process.size: 1024m
+
+taskmanager.host: taskmanager
+taskmanager.bind-host: 0.0.0.0
+taskmanager.rpc.port: 6122
+taskmanager.numberOfTaskSlots: 4
+taskmanager.memory.process.size: 1536m
+taskmanager.memory.managed.size: 512m
+parallelism.default: 2
+state.checkpoints.dir: file:///flink-checkpoints/
+state.savepoints.dir: file:///flink-savepoints/
+
+# For Python jobs
+python.executable: python3

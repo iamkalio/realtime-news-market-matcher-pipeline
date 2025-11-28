@@ -1,14 +1,19 @@
-FROM python:3.8-slim
+FROM python:3.10-slim
+
+WORKDIR /app
 
 COPY requirements.txt .
 
-RUN set -ex; \
-  	pip install --no-cache-dir -r requirements.txt
+RUN apt-get update && \
+	apt-get install -y bash netcat-openbsd && \
+	rm -rf /var/lib/apt/lists/* && \
+	pip install --no-cache-dir -r requirements.txt
 
-# Copy resources
-WORKDIR /
 COPY wait-for-it.sh wait-for-it.sh
+COPY producer.py producer.py
 
-ADD python-producer.py .
+RUN chmod +x wait-for-it.sh
 
-CMD ./wait-for-it.sh -s -t 30 $ZOOKEEPER_SERVER -- ./wait-for-it.sh -s -t 30 $KAFKA_SERVER -- python -u python-producer.py
+ENV PYTHONUNBUFFERED=1
+
+CMD ["./wait-for-it.sh", "kafka:9092", "--", "python", "-u", "producer.py"]
