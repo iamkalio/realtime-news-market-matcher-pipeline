@@ -112,6 +112,19 @@ services:
       - ./flink-processor/src:/opt/flink/usrlib:ro
     restart: "no"
 
+  api-service:
+    build:
+      context: ./api-service
+    depends_on:
+      kafka-setup:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      PORT: 8000
+    restart: unless-stopped
+
 volumes:
   flink-checkpoints:
   flink-savepoints:
