@@ -13,41 +13,41 @@ class KafkaDataStore:
     
     def __init__(self, max_size: int = 1000):
         self.max_size = max_size
-        self.transactions: Deque[Dict] = deque(maxlen=max_size)
-        self.fraud_alerts: Deque[Dict] = deque(maxlen=max_size)
+        self.news_stream: Deque[Dict] = deque(maxlen=max_size)
+        self.processed_news: Deque[Dict] = deque(maxlen=max_size)
         self.lock = threading.Lock()
     
-    def add_transaction(self, transaction: Dict):
+    def add_news(self, news: Dict):
         with self.lock:
-            self.transactions.append(transaction)
+            self.news_stream.append(news)
     
-    def add_fraud_alert(self, alert: Dict):
+    def add_processed_news(self, processed: Dict):
         with self.lock:
-            self.fraud_alerts.append(alert)
+            self.processed_news.append(processed)
     
-    def get_recent_transactions(self, limit: int = 100) -> List[Dict]:
+    def get_recent_news(self, limit: int = 100) -> List[Dict]:
         with self.lock:
-            return list(self.transactions)[-limit:]
+            return list(self.news_stream)[-limit:]
     
-    def get_recent_alerts(self, limit: int = 100) -> List[Dict]:
+    def get_recent_processed(self, limit: int = 100) -> List[Dict]:
         with self.lock:
-            return list(self.fraud_alerts)[-limit:]
+            return list(self.processed_news)[-limit:]
     
     def get_stats(self) -> Dict:
         with self.lock:
-            total_tx = len(self.transactions)
-            total_alerts = len(self.fraud_alerts)
-            fraud_rate = (total_alerts / total_tx * 100) if total_tx > 0 else 0.0
+            total_news = len(self.news_stream)
+            total_processed = len(self.processed_news)
+            processing_rate = (total_processed / total_news * 100) if total_news > 0 else 0.0
             
-            latest_tx_time = self.transactions[-1]["timestamp"] if self.transactions else None
-            latest_alert_time = self.fraud_alerts[-1]["timestamp"] if self.fraud_alerts else None
+            latest_news_time = self.news_stream[-1].get("time") if self.news_stream else None
+            latest_processed_time = self.processed_news[-1].get("time") if self.processed_news else None
             
             return {
-                "total_transactions": total_tx,
-                "total_fraud_alerts": total_alerts,
-                "fraud_rate": round(fraud_rate, 2),
-                "latest_transaction_time": latest_tx_time,
-                "latest_alert_time": latest_alert_time,
+                "total_news": total_news,
+                "total_processed": total_processed,
+                "processing_rate": round(processing_rate, 2),
+                "latest_news_time": latest_news_time,
+                "latest_processed_time": latest_processed_time,
             }
 
 
@@ -56,52 +56,52 @@ def start_kafka_consumers(store: KafkaDataStore):
     
     bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
     
-    def consume_transactions():
+    def consume_news_stream():
         import time
         while True:
             try:
                 consumer = KafkaConsumer(
-                    "transactions",
+                    "news_stream",
                     bootstrap_servers=bootstrap_servers,
                     value_deserializer=lambda m: json.loads(m.decode("utf-8")),
                     auto_offset_reset="latest",  # Only new messages
                     consumer_timeout_ms=1000,
                 )
                 
-                print("Started consuming transactions topic...")
+                print("Started consuming news_stream topic...")
                 for message in consumer:
-                    store.add_transaction(message.value)
-                    print(f"Received transaction: {message.value['transaction_id']}")
+                    store.add_news(message.value)
+                    print(f"Received news: {message.value.get('source', 'Unknown')} - {message.value.get('news', '')[:50]}...")
             except Exception as e:
-                print(f"Error consuming transactions: {e}, retrying in 5 seconds...")
+                print(f"Error consuming news_stream: {e}, retrying in 5 seconds...")
                 time.sleep(5)
     
-    def consume_fraud_alerts():
+    def consume_processed_news():
         import time
         while True:
             try:
                 consumer = KafkaConsumer(
-                    "fraud-alerts",
+                    "processed_news",
                     bootstrap_servers=bootstrap_servers,
                     value_deserializer=lambda m: json.loads(m.decode("utf-8")),
                     auto_offset_reset="latest",
                     consumer_timeout_ms=1000,
                 )
                 
-                print("Started consuming fraud-alerts topic...")
+                print("Started consuming processed_news topic...")
                 for message in consumer:
-                    store.add_fraud_alert(message.value)
-                    print(f"Received fraud alert: {message.value['transaction_id']}")
+                    store.add_processed_news(message.value)
+                    print(f"Received processed news: {message.value.get('source', 'Unknown')} - matched: {message.value.get('matched_market', 'None')}")
             except Exception as e:
-                print(f"Error consuming fraud-alerts: {e}, retrying in 5 seconds...")
+                print(f"Error consuming processed_news: {e}, retrying in 5 seconds...")
                 time.sleep(5)
     
     # Start consumer threads
-    tx_thread = threading.Thread(target=consume_transactions, daemon=True)
-    alert_thread = threading.Thread(target=consume_fraud_alerts, daemon=True)
+    news_thread = threading.Thread(target=consume_news_stream, daemon=True)
+    processed_thread = threading.Thread(target=consume_processed_news, daemon=True)
     
-    tx_thread.start()
-    alert_thread.start()
+    news_thread.start()
+    processed_thread.start()
     
-    return tx_thread, alert_thread
+    return news_thread, processed_thread
 

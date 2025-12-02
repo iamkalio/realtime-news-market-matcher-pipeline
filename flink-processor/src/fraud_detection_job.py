@@ -16,94 +16,120 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
-TRANSACTIONS_TOPIC = os.getenv("KAFKA_SOURCE_TOPIC", "transactions")
-ALERTS_TOPIC = os.getenv("KAFKA_SINK_TOPIC", "fraud-alerts")
-FRAUD_THRESHOLD = float(os.getenv("FRAUD_THRESHOLD", "5000"))
 
-logger.info(f"Configuration:")
+# Updated topics for news processing
+NEWS_SOURCE_TOPIC = os.getenv("KAFKA_SOURCE_TOPIC", "news_stream")
+PROCESSED_NEWS_TOPIC = os.getenv("KAFKA_SINK_TOPIC", "processed_news")
+
+logger.info("Configuration:")
 logger.info(f"  Kafka Bootstrap: {KAFKA_BOOTSTRAP}")
-logger.info(f"  Source Topic: {TRANSACTIONS_TOPIC}")
-logger.info(f"  Sink Topic: {ALERTS_TOPIC}")
-logger.info(f"  Fraud Threshold: {FRAUD_THRESHOLD}")
+logger.info(f"  Source Topic: {NEWS_SOURCE_TOPIC}")
+logger.info(f"  Sink Topic: {PROCESSED_NEWS_TOPIC}")
 
 
-def _parse_transaction(value: str) -> Optional[Dict[str, Any]]:
-    """Parse JSON transaction string to dictionary."""
+# -------------------------------
+# JSON Parsing
+# -------------------------------
+def parse_news(value: str) -> Optional[Dict[str, Any]]:
+    """Parse incoming Kafka message as news JSON."""
     try:
         parsed = json.loads(value)
         if isinstance(parsed, dict):
             return parsed
-    except json.JSONDecodeError as e:
-        logger.warning(f"Failed to parse transaction: {e}")
+    except json.JSONDecodeError as exc:
+        logger.warning(f"Failed to parse incoming news: {exc}")
     return None
 
 
-def main():
-    """Main fraud detection pipeline."""
-    logger.info("Starting Fraud Detection Pipeline")
-    
-    env = StreamExecutionEnvironment.get_execution_environment()
-    
-    # Enable logging
-    logger.info("Environment created, configuring Kafka source...")
+# -------------------------------
+# Placeholder for future logic
+# (vector DB lookup, semantic matching, etc.)
+# -------------------------------
+def placeholder_market_matching(news_item: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Placeholder for advanced matching logic.
+    TODO:
+        - Embed news text
+        - Query vector DB with cosine similarity
+        - Match to prediction market entries
+        - Add scores / metadata
+    """
+    news_item["matched_market"] = None
+    return news_item
 
-    # Kafka source with proper properties
+
+# -------------------------------
+# Main Flink Pipeline
+# -------------------------------
+def main():
+    logger.info("Starting News Processing Pipeline")
+
+    env = StreamExecutionEnvironment.get_execution_environment()
+
     kafka_props = {
         "bootstrap.servers": KAFKA_BOOTSTRAP,
-        "group.id": "flink-fraud-detection",
+        "group.id": "flink-news-consumer",
         "auto.offset.reset": "earliest",
     }
-    
+
+    # Create Kafka Source
     try:
         kafka_source = FlinkKafkaConsumer(
-            topics=TRANSACTIONS_TOPIC,
+            topics=NEWS_SOURCE_TOPIC,
             properties=kafka_props,
             deserialization_schema=SimpleStringSchema(),
         )
-        logger.info("✓ Kafka source created successfully")
-    except Exception as e:
-        logger.error(f"✗ Failed to create Kafka source: {e}")
+        logger.info("✓ Kafka source created")
+    except Exception as exc:
+        logger.error(f"✗ Failed to create Kafka source: {exc}")
         raise
 
-    transactions = env.add_source(kafka_source)
+    stream = env.add_source(kafka_source)
     logger.info("✓ Source added to environment")
 
-    # Parse and filter transactions
-    parsed_transactions = (
-        transactions
-        .map(_parse_transaction)
-        .filter(lambda tx: tx is not None)
+    # Parse News
+    parsed_news = (
+        stream.map(parse_news)
+              .filter(lambda item: item is not None)
     )
-    logger.info("✓ Parsing and filtering configured")
+    logger.info("✓ Parsing configured")
 
-    # Fraud Detection Logic - filter by amount threshold
-    fraud_alerts = parsed_transactions.filter(
-        lambda tx: float(tx.get("amount", 0)) > FRAUD_THRESHOLD
+    # Filter Only Reuters
+    reuters_only = parsed_news.filter(
+        lambda item: item.get("source", "").lower() == "reuters"
     )
-    logger.info(f"✓ Fraud detection filter configured (threshold: {FRAUD_THRESHOLD})")
+    logger.info("✓ Reuters filter configured")
 
-    fraud_alert_strings = fraud_alerts.map(
-        lambda tx: json.dumps(tx),
-        output_type=Types.STRING(),
+    # Placeholder for future NLP + matching logic
+    processed = reuters_only.map(
+        placeholder_market_matching,
+        output_type=Types.MAP(Types.STRING(), Types.STRING())
+    )
+    logger.info("✓ Placeholder matching logic configured")
+
+    # Convert back to JSON string
+    processed_strings = processed.map(
+        lambda item: json.dumps(item),
+        output_type=Types.STRING()
     )
 
-    # Send to Kafka Sink
+    # Kafka Sink
     try:
         kafka_sink = FlinkKafkaProducer(
-            topic=ALERTS_TOPIC,
+            topic=PROCESSED_NEWS_TOPIC,
             producer_config={"bootstrap.servers": KAFKA_BOOTSTRAP},
             serialization_schema=SimpleStringSchema(),
         )
-        logger.info("✓ Kafka sink created successfully")
-    except Exception as e:
-        logger.error(f"✗ Failed to create Kafka sink: {e}")
+        logger.info("✓ Kafka sink created")
+    except Exception as exc:
+        logger.error(f"✗ Failed to create Kafka sink: {exc}")
         raise
 
-    fraud_alert_strings.add_sink(kafka_sink)
+    processed_strings.add_sink(kafka_sink)
     logger.info("✓ Sink added to pipeline")
 
     logger.info("Executing job...")
-    env.execute("Fraud Detection Job")
+    env.execute("News Processing Job")
 
 
 if __name__ == "__main__":

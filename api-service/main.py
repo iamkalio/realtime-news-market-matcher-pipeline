@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from kafka_consumer import KafkaDataStore, start_kafka_consumers
-from models import FraudAlert, StatsResponse, Transaction
+from models import NewsItem, ProcessedNews, StatsResponse
 
 # Global data store
 data_store = KafkaDataStore(max_size=1000)
@@ -25,8 +25,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Fraud Detection API",
-    description="API to query transactions and fraud alerts from Kafka",
+    title="News Processing API",
+    description="API to query news stream and processed news from Kafka",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -46,28 +46,28 @@ async def root():
     """Health check endpoint."""
     return {
         "status": "healthy",
-        "service": "fraud-detection-api",
+        "service": "news-processing-api",
         "endpoints": {
-            "transactions": "/api/transactions",
-            "fraud-alerts": "/api/fraud-alerts",
+            "news": "/api/news",
+            "processed": "/api/processed",
             "stats": "/api/stats",
             "stream": "/ws",
         },
     }
 
 
-@app.get("/api/transactions", response_model=List[Transaction])
-async def get_transactions(limit: int = 100):
-    """Get recent transactions."""
-    transactions = data_store.get_recent_transactions(limit=limit)
-    return transactions
+@app.get("/api/news", response_model=List[NewsItem])
+async def get_news(limit: int = 100):
+    """Get recent news from news_stream."""
+    news = data_store.get_recent_news(limit=limit)
+    return news
 
 
-@app.get("/api/fraud-alerts", response_model=List[FraudAlert])
-async def get_fraud_alerts(limit: int = 100):
-    """Get recent fraud alerts."""
-    alerts = data_store.get_recent_alerts(limit=limit)
-    return alerts
+@app.get("/api/processed", response_model=List[ProcessedNews])
+async def get_processed_news(limit: int = 100):
+    """Get recent processed news."""
+    processed = data_store.get_recent_processed(limit=limit)
+    return processed
 
 
 @app.get("/api/stats", response_model=StatsResponse)
@@ -77,16 +77,12 @@ async def get_stats():
     return stats
 
 
-@app.get("/api/transactions/{transaction_id}")
-async def get_transaction_by_id(transaction_id: str):
-    """Get a specific transaction by ID."""
-    transactions = data_store.get_recent_transactions(limit=1000)
-    for tx in transactions:
-        if tx["transaction_id"] == transaction_id:
-            return tx
-    return JSONResponse(
-        status_code=404, content={"error": "Transaction not found"}
-    )
+@app.get("/api/news/source/{source}")
+async def get_news_by_source(source: str):
+    """Get news by source."""
+    news = data_store.get_recent_news(limit=1000)
+    filtered = [item for item in news if item.get("source", "").lower() == source.lower()]
+    return filtered
 
 
 @app.websocket("/ws")
@@ -100,8 +96,8 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.send_json({"type": "stats", "data": stats})
         
         # Keep connection alive and send updates
-        last_tx_count = stats["total_transactions"]
-        last_alert_count = stats["total_fraud_alerts"]
+        last_news_count = stats["total_news"]
+        last_processed_count = stats["total_processed"]
         
         import asyncio
         while True:
@@ -111,33 +107,33 @@ async def websocket_endpoint(websocket: WebSocket):
             
             # Send updates if data changed
             if (
-                current_stats["total_transactions"] > last_tx_count
-                or current_stats["total_fraud_alerts"] > last_alert_count
+                current_stats["total_news"] > last_news_count
+                or current_stats["total_processed"] > last_processed_count
             ):
                 await websocket.send_json(
                     {"type": "stats", "data": current_stats}
                 )
                 
-                # Send new transactions
-                new_tx = data_store.get_recent_transactions(
-                    limit=current_stats["total_transactions"] - last_tx_count
+                # Send new news items
+                new_news = data_store.get_recent_news(
+                    limit=current_stats["total_news"] - last_news_count
                 )
-                for tx in new_tx[-10:]:  # Last 10 new transactions
+                for news in new_news[-10:]:  # Last 10 new news items
                     await websocket.send_json(
-                        {"type": "transaction", "data": tx}
+                        {"type": "news", "data": news}
                     )
                 
-                # Send new alerts
-                new_alerts = data_store.get_recent_alerts(
-                    limit=current_stats["total_fraud_alerts"] - last_alert_count
+                # Send new processed items
+                new_processed = data_store.get_recent_processed(
+                    limit=current_stats["total_processed"] - last_processed_count
                 )
-                for alert in new_alerts[-10:]:  # Last 10 new alerts
+                for processed in new_processed[-10:]:  # Last 10 new processed items
                     await websocket.send_json(
-                        {"type": "fraud_alert", "data": alert}
+                        {"type": "processed", "data": processed}
                     )
                 
-                last_tx_count = current_stats["total_transactions"]
-                last_alert_count = current_stats["total_fraud_alerts"]
+                last_news_count = current_stats["total_news"]
+                last_processed_count = current_stats["total_processed"]
             
             # Keep-alive ping
             await websocket.send_json({"type": "ping"})

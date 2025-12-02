@@ -20,6 +20,9 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
 
+  # ----------------------------
+  # Create updated Kafka topics
+  # ----------------------------
   kafka-setup:
     image: confluentinc/cp-kafka:7.6.0
     depends_on:
@@ -27,12 +30,15 @@ services:
         condition: service_started
     entrypoint: >
       /bin/sh -c "
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic transactions --partitions 1 --replication-factor 1 &&
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic fraud-alerts --partitions 1 --replication-factor 1 &&
-      echo 'Kafka topics ready';
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic news_stream --partitions 1 --replication-factor 1 &&
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic processed_news --partitions 1 --replication-factor 1 &&
+      echo 'Kafka topics created: news_stream, processed_news';
       sleep 2"
     restart: "no"
 
+  # ----------------------------
+  # PRODUCER → sends news_stream
+  # ----------------------------
   kafka-producer:
     build:
       context: ./kafka-producer
@@ -41,10 +47,13 @@ services:
         condition: service_completed_successfully
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      KAFKA_TOPIC: transactions
-      PRODUCER_INTERVAL_SECONDS: 2
+      KAFKA_TOPIC: news_stream
+      PRODUCER_INTERVAL_SECONDS: 1
     restart: unless-stopped
 
+  # ----------------------------
+  # FLINK ---- JobManager
+  # ----------------------------
   jobmanager:
     build:
       context: ./flink-processor
@@ -57,9 +66,8 @@ services:
     command: jobmanager
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      KAFKA_SOURCE_TOPIC: transactions
-      KAFKA_SINK_TOPIC: fraud-alerts
-      FRAUD_THRESHOLD: "5000"
+      KAFKA_SOURCE_TOPIC: news_stream
+      KAFKA_SINK_TOPIC: processed_news
       JOB_MANAGER_RPC_ADDRESS: jobmanager
       JAVA_TOOL_OPTIONS: >
         -Dlog4j.configuration=file:///opt/flink/conf/log4j.properties
@@ -71,6 +79,9 @@ services:
     hostname: jobmanager
     restart: unless-stopped
 
+  # ----------------------------
+  # FLINK ---- TaskManager
+  # ----------------------------
   taskmanager:
     build:
       context: ./flink-processor
@@ -80,9 +91,8 @@ services:
     command: taskmanager
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      KAFKA_SOURCE_TOPIC: transactions
-      KAFKA_SINK_TOPIC: fraud-alerts
-      FRAUD_THRESHOLD: "5000"
+      KAFKA_SOURCE_TOPIC: news_stream
+      KAFKA_SINK_TOPIC: processed_news
       JOB_MANAGER_RPC_ADDRESS: jobmanager
       JAVA_TOOL_OPTIONS: >
         -Dlog4j.configuration=file:///opt/flink/conf/log4j.properties
@@ -94,6 +104,9 @@ services:
     hostname: taskmanager
     restart: unless-stopped
 
+  # ----------------------------
+  # Submit Flink Job Automatically
+  # ----------------------------
   job-submitter:
     build:
       context: ./flink-processor
@@ -105,13 +118,15 @@ services:
     command: python3 /opt/flink/usrlib/submit_job.py
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      KAFKA_SOURCE_TOPIC: transactions
-      KAFKA_SINK_TOPIC: fraud-alerts
-      FRAUD_THRESHOLD: "5000"
+      KAFKA_SOURCE_TOPIC: news_stream
+      KAFKA_SINK_TOPIC: processed_news
     volumes:
       - ./flink-processor/src:/opt/flink/usrlib:ro
     restart: "no"
 
+  # ----------------------------
+  # API Service (unchanged)
+  # ----------------------------
   api-service:
     build:
       context: ./api-service
