@@ -2,6 +2,7 @@ import json
 import os
 import logging
 from typing import Any, Dict, Optional
+import requests
 
 from pyflink.common.serialization import SimpleStringSchema
 from pyflink.common.typeinfo import Types
@@ -21,10 +22,14 @@ KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 NEWS_SOURCE_TOPIC = os.getenv("KAFKA_SOURCE_TOPIC", "news_stream")
 PROCESSED_NEWS_TOPIC = os.getenv("KAFKA_SINK_TOPIC", "processed_news")
 
+# Embedding service configuration
+EMBEDDING_SERVICE_URL = os.getenv("EMBEDDING_SERVICE_URL", "http://embedding-service:8001/embed")
+
 logger.info("Configuration:")
 logger.info(f"  Kafka Bootstrap: {KAFKA_BOOTSTRAP}")
 logger.info(f"  Source Topic: {NEWS_SOURCE_TOPIC}")
 logger.info(f"  Sink Topic: {PROCESSED_NEWS_TOPIC}")
+logger.info(f"  Embedding Service: {EMBEDDING_SERVICE_URL}")
 
 
 # -------------------------------
@@ -42,19 +47,85 @@ def parse_news(value: str) -> Optional[Dict[str, Any]]:
 
 
 # -------------------------------
-# Placeholder for future logic
-# (vector DB lookup, semantic matching, etc.)
+# Embedding Generation
 # -------------------------------
-def placeholder_market_matching(news_item: Dict[str, Any]) -> Dict[str, Any]:
+def generate_embedding(text: str) -> Optional[list]:
     """
-    Placeholder for advanced matching logic.
+    Call the embedding microservice to generate embeddings.
+    
+    Args:
+        text: Text to embed
+        
+    Returns:
+        List of floats (embedding vector) or None if failed
+    """
+    try:
+        response = requests.post(
+            EMBEDDING_SERVICE_URL,
+            json={"text": text},
+            timeout=2.0  # 2 second timeout
+        )
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("embedding")
+        else:
+            logger.warning(f"Embedding service returned status {response.status_code}")
+            return None
+    except requests.exceptions.Timeout:
+        logger.error("Embedding service timeout")
+        return None
+    except Exception as e:
+        logger.error(f"Embedding error: {e}")
+        return None
+
+
+# -------------------------------
+# Semantic Market Matching
+# -------------------------------
+def semantic_market_matching(news_item: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Generate embedding and match to prediction markets.
+    
     TODO:
-        - Embed news text
-        - Query vector DB with cosine similarity
+        - Query pgvector with cosine similarity
         - Match to prediction market entries
         - Add scores / metadata
     """
-    news_item["matched_market"] = None
+    # Get the news text (could be from different fields)
+    headline = news_item.get("headline") or news_item.get("news", "")
+    
+    if not headline:
+        logger.warning("No text found in news item")
+        news_item["matched_market"] = None
+        news_item["embedding_status"] = "no_text"
+        return news_item
+    
+    # Generate embedding
+    embedding = generate_embedding(headline)
+    
+    if embedding is None:
+        logger.warning(f"Failed to generate embedding for: {headline[:50]}")
+        news_item["matched_market"] = None
+        news_item["embedding_status"] = "failed"
+        return news_item
+    
+    # Successfully generated embedding
+    logger.info(f"Generated embedding (dim={len(embedding)}) for: {headline[:50]}...")
+    
+    # TODO: Query pgvector here
+    # Example:
+    # matched = query_vector_db(embedding)
+    # news_item["matched_market"] = matched["market_id"]
+    # news_item["match_score"] = matched["similarity"]
+    
+    # For now, just indicate we have the embedding
+    news_item["embedding_dim"] = len(embedding)
+    news_item["embedding_status"] = "success"
+    news_item["matched_market"] = None  # Will be replaced with actual DB query
+    
+    # Note: We don't store the full embedding in Kafka (too large)
+    # Instead, it would be stored in pgvector
+    
     return news_item
 
 
@@ -100,12 +171,12 @@ def main():
     )
     logger.info("✓ Reuters filter configured")
 
-    # Placeholder for future NLP + matching logic
+    # Semantic matching with embeddings
     processed = reuters_only.map(
-        placeholder_market_matching,
+        semantic_market_matching,
         output_type=Types.MAP(Types.STRING(), Types.STRING())
     )
-    logger.info("✓ Placeholder matching logic configured")
+    logger.info("✓ Semantic matching logic configured")
 
     # Convert back to JSON string
     processed_strings = processed.map(

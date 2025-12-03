@@ -72,6 +72,24 @@ services:
     restart: unless-stopped
 
   # ----------------------------
+  # Embedding Service (must start before Flink)
+  # ----------------------------
+  embedding-service:
+    build:
+      context: ./embedding-service
+    ports:
+      - "8001:8001"
+    environment:
+      PORT: 8001
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ----------------------------
   # FLINK ---- JobManager
   # ----------------------------
   jobmanager:
@@ -80,6 +98,8 @@ services:
     depends_on:
       kafka-setup:
         condition: service_completed_successfully
+      embedding-service:
+        condition: service_healthy
     ports:
       - "8081:8081"
       - "6123:6123"
@@ -88,6 +108,7 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_SOURCE_TOPIC: news_stream
       KAFKA_SINK_TOPIC: processed_news
+      EMBEDDING_SERVICE_URL: http://embedding-service:8001/embed
       JOB_MANAGER_RPC_ADDRESS: jobmanager
       JAVA_TOOL_OPTIONS: >
         -Dlog4j.configuration=file:///opt/flink/conf/log4j.properties
@@ -108,11 +129,14 @@ services:
     depends_on:
       jobmanager:
         condition: service_started
+      embedding-service:
+        condition: service_healthy
     command: taskmanager
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_SOURCE_TOPIC: news_stream
       KAFKA_SINK_TOPIC: processed_news
+      EMBEDDING_SERVICE_URL: http://embedding-service:8001/embed
       JOB_MANAGER_RPC_ADDRESS: jobmanager
       JAVA_TOOL_OPTIONS: >
         -Dlog4j.configuration=file:///opt/flink/conf/log4j.properties
@@ -135,11 +159,14 @@ services:
         condition: service_started
       taskmanager:
         condition: service_started
+      embedding-service:
+        condition: service_healthy
     command: python3 /opt/flink/usrlib/submit_job.py
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_SOURCE_TOPIC: news_stream
       KAFKA_SINK_TOPIC: processed_news
+      EMBEDDING_SERVICE_URL: http://embedding-service:8001/embed
     volumes:
       - ./flink-processor/src:/opt/flink/usrlib:ro
     restart: "no"
@@ -159,23 +186,6 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       PORT: 8000
     restart: unless-stopped
-
-  # ----------------------------
-  # Embedding Service
-  # ----------------------------
-  embedding-service:
-    build:
-      context: ./embedding-service
-    ports:
-      - "8001:8001"
-    environment:
-      PORT: 8001
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
 volumes:
   flink-checkpoints:

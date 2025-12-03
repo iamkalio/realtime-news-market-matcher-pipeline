@@ -24,19 +24,19 @@ RUN JAVA_HOME_DIR="$(dirname "$(dirname "$(readlink -f "$(which javac)")")")" &&
     mkdir -p /opt/java && \
     if [ -e /opt/java/openjdk ]; then rm -rf /opt/java/openjdk; fi && \
     ln -s "$JAVA_HOME_DIR" /opt/java/openjdk && \
-    JAVA_HOME=/opt/java/openjdk pip3 install --no-cache-dir apache-flink==1.18.1 requests
+    JAVA_HOME=/opt/java/openjdk pip3 install --no-cache-dir apache-flink==1.18.1 requests==2.31.0
 
 # Download Kafka connector matching Flink 1.18 (DataStream API)
 RUN mkdir -p /opt/flink/lib/kafka-connectors && \
     cd /opt/flink/lib && \
     curl -fSL -o flink-connector-kafka-3.0.1-1.18.jar \
-      https://repo1.maven.org/maven2/org/apache/flink/flink-connector-kafka/3.0.1-1.18/flink-connector-kafka-3.0.1-1.18.jar && \
+    https://repo1.maven.org/maven2/org/apache/flink/flink-connector-kafka/3.0.1-1.18/flink-connector-kafka-3.0.1-1.18.jar && \
     chmod 644 flink-connector-kafka-3.0.1-1.18.jar && \
     echo "Downloaded Kafka connector 3.0.1-1.18"
 
 # Kafka client library required by the connector
 RUN curl -fSL -o kafka-clients-3.5.1.jar \
-      https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/3.5.1/kafka-clients-3.5.1.jar && \
+    https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/3.5.1/kafka-clients-3.5.1.jar && \
     chmod 644 kafka-clients-3.5.1.jar && \
     mv kafka-clients-3.5.1.jar /opt/flink/lib/
 
