@@ -37,6 +37,26 @@ services:
     restart: "no"
 
   # ----------------------------
+  # PGVECTOR DATABASE
+  # ----------------------------
+  pgvector:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: news_match
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ----------------------------
   # PRODUCER → sends news_stream
   # ----------------------------
   kafka-producer:
@@ -125,7 +145,7 @@ services:
     restart: "no"
 
   # ----------------------------
-  # API Service (unchanged)
+  # API Service
   # ----------------------------
   api-service:
     build:
@@ -140,9 +160,27 @@ services:
       PORT: 8000
     restart: unless-stopped
 
+  # ----------------------------
+  # Embedding Service
+  # ----------------------------
+  embedding-service:
+    build:
+      context: ./embedding-service
+    ports:
+      - "8001:8001"
+    environment:
+      PORT: 8001
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
 volumes:
   flink-checkpoints:
   flink-savepoints:
+  pg_data:
 
 networks:
   default:
