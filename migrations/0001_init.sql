@@ -1,6 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
-CREATE TABLE markets (
+CREATE TABLE IF NOT EXISTS markets (
     id SERIAL PRIMARY KEY,
     source TEXT NOT NULL,
     published_date DATE NOT NULL,
@@ -9,10 +9,10 @@ CREATE TABLE markets (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE TABLE market_embeddings (
+CREATE TABLE IF NOT EXISTS market_embeddings (
     id SERIAL PRIMARY KEY,
     market_id INT NOT NULL REFERENCES markets(id) ON DELETE CASCADE,
-    embedding VECTOR(1536),
+    embedding VECTOR(384),  -- Changed from 1536 to 384 for local embedding service (all-MiniLM-L6-v2)
     created_at TIMESTAMP DEFAULT NOW()
 );
 

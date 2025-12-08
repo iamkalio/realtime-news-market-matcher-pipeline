@@ -24,7 +24,7 @@ RUN JAVA_HOME_DIR="$(dirname "$(dirname "$(readlink -f "$(which javac)")")")" &&
     mkdir -p /opt/java && \
     if [ -e /opt/java/openjdk ]; then rm -rf /opt/java/openjdk; fi && \
     ln -s "$JAVA_HOME_DIR" /opt/java/openjdk && \
-    JAVA_HOME=/opt/java/openjdk pip3 install --no-cache-dir apache-flink==1.18.1 requests==2.31.0
+    JAVA_HOME=/opt/java/openjdk pip3 install --no-cache-dir apache-flink==1.18.1 requests==2.31.0 psycopg2-binary
 
 # Download Kafka connector matching Flink 1.18 (DataStream API)
 RUN mkdir -p /opt/flink/lib/kafka-connectors && \

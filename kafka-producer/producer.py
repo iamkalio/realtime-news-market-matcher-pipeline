@@ -10,7 +10,7 @@ from kafka import KafkaProducer
 
 BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 TOPIC = os.getenv("KAFKA_TOPIC", "news_stream")
-INTERVAL_SECONDS = float(os.getenv("PRODUCER_INTERVAL_SECONDS", "1"))
+INTERVAL_SECONDS = float(os.getenv("PRODUCER_INTERVAL_SECONDS", "4"))
 
 
 def build_producer() -> KafkaProducer:

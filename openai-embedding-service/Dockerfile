@@ -15,8 +15,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY service.py .
 
 # Expose port
-EXPOSE 8001
+EXPOSE 8002
 
 # Run the service
-CMD ["uvicorn", "service:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["uvicorn", "service:app", "--host", "0.0.0.0", "--port", "8002"]
+
+
+
+
 

@@ -3,6 +3,7 @@ import os
 import logging
 from typing import Any, Dict, Optional
 import requests
+import psycopg2
 
 from pyflink.common.serialization import SimpleStringSchema
 from pyflink.common.typeinfo import Types
@@ -25,11 +26,19 @@ PROCESSED_NEWS_TOPIC = os.getenv("KAFKA_SINK_TOPIC", "processed_news")
 # Embedding service configuration
 EMBEDDING_SERVICE_URL = os.getenv("EMBEDDING_SERVICE_URL", "http://embedding-service:8001/embed")
 
+# Database configuration
+PG_HOST = os.getenv("PG_HOST", "pgvector")
+PG_PORT = os.getenv("PG_PORT", "5432")
+PG_DATABASE = os.getenv("PG_DATABASE", "news_match")
+PG_USER = os.getenv("PG_USER", "postgres")
+PG_PASSWORD = os.getenv("PG_PASSWORD", "postgres")
+
 logger.info("Configuration:")
 logger.info(f"  Kafka Bootstrap: {KAFKA_BOOTSTRAP}")
 logger.info(f"  Source Topic: {NEWS_SOURCE_TOPIC}")
 logger.info(f"  Sink Topic: {PROCESSED_NEWS_TOPIC}")
 logger.info(f"  Embedding Service: {EMBEDDING_SERVICE_URL}")
+logger.info(f"  Database: {PG_HOST}:{PG_PORT}/{PG_DATABASE}")
 
 
 # -------------------------------
@@ -84,12 +93,7 @@ def generate_embedding(text: str) -> Optional[list]:
 # -------------------------------
 def semantic_market_matching(news_item: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Generate embedding and match to prediction markets.
-    
-    TODO:
-        - Query pgvector with cosine similarity
-        - Match to prediction market entries
-        - Add scores / metadata
+    Generate embedding and prepare for database storage.
     """
     # Get the news text (could be from different fields)
     headline = news_item.get("headline") or news_item.get("news", "")
@@ -112,21 +116,134 @@ def semantic_market_matching(news_item: Dict[str, Any]) -> Dict[str, Any]:
     # Successfully generated embedding
     logger.info(f"Generated embedding (dim={len(embedding)}) for: {headline[:50]}...")
     
-    # TODO: Query pgvector here
-    # Example:
-    # matched = query_vector_db(embedding)
-    # news_item["matched_market"] = matched["market_id"]
-    # news_item["match_score"] = matched["similarity"]
-    
-    # For now, just indicate we have the embedding
+    # Store embedding in news_item for database insertion
+    news_item["embedding"] = embedding
     news_item["embedding_dim"] = len(embedding)
     news_item["embedding_status"] = "success"
-    news_item["matched_market"] = None  # Will be replaced with actual DB query
-    
-    # Note: We don't store the full embedding in Kafka (too large)
-    # Instead, it would be stored in pgvector
+    news_item["matched_market"] = None  # Will be replaced with actual DB query later
     
     return news_item
+
+
+# -------------------------------
+# Database Storage Function
+# -------------------------------
+# Module-level connection (created on first use, reused for subsequent calls)
+_db_conn = None
+_db_cursor = None
+
+def _get_db_connection():
+    """Get or create database connection (lazy initialization)."""
+    global _db_conn, _db_cursor
+    if _db_conn is None or _db_conn.closed:
+        try:
+            _db_conn = psycopg2.connect(
+                host=PG_HOST,
+                port=PG_PORT,
+                database=PG_DATABASE,
+                user=PG_USER,
+                password=PG_PASSWORD
+            )
+            _db_conn.autocommit = True
+            _db_cursor = _db_conn.cursor()
+            logger.info("✓ Postgres connection opened")
+        except Exception as e:
+            logger.error(f"✗ Failed to open Postgres connection: {e}")
+            raise
+    return _db_conn, _db_cursor
+
+def store_news_in_db(news_item: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Store news and embeddings in PostgreSQL/pgvector.
+    
+    Assumes news_item contains:
+        - source
+        - date (or published_date)
+        - time (or published_time)
+        - headline (or news)
+        - embedding (list of floats)
+    """
+    try:
+        # Get database connection
+        conn, cursor = _get_db_connection()
+        
+        # Extract fields with fallbacks
+        source = news_item.get("source")
+        published_date = news_item.get("published_date") or news_item.get("date")
+        published_time = news_item.get("published_time") or news_item.get("time")
+        headline = news_item.get("headline") or news_item.get("news", "")
+        embedding = news_item.get("embedding")
+        
+        # Validate required fields
+        if not all([source, published_date, published_time, headline]):
+            logger.warning(f"Missing required fields in news_item: {news_item}")
+            news_item["db_status"] = "failed_missing_fields"
+            return news_item
+        
+        if not embedding:
+            logger.warning(f"No embedding found in news_item")
+            news_item["db_status"] = "failed_no_embedding"
+            return news_item
+        
+        # 1. Insert the main news into markets
+        insert_markets_sql = """
+        INSERT INTO markets (source, published_date, published_time, headline)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id;
+        """
+        
+        cursor.execute(
+            insert_markets_sql,
+            (source, published_date, published_time, headline)
+        )
+        
+        market_id = cursor.fetchone()[0]
+        
+        # 2. Insert embedding into market_embeddings
+        # Convert list to string format for pgvector: '[0.1,0.2,0.3]'
+        embedding_str = '[' + ','.join(map(str, embedding)) + ']'
+        
+        insert_embedding_sql = """
+        INSERT INTO market_embeddings (market_id, embedding)
+        VALUES (%s, %s::vector);
+        """
+        
+        cursor.execute(
+            insert_embedding_sql,
+            (market_id, embedding_str)
+        )
+        
+        logger.info(f"✓ Saved news + embedding into DB (id={market_id}, dim={len(embedding)})")
+        
+        # Enrich news_item with database info
+        news_item["market_id"] = market_id
+        news_item["db_status"] = "saved"
+        
+        return news_item
+        
+    except Exception as e:
+        logger.error(f"✗ Error saving to database: {e}")
+        news_item["db_status"] = f"failed: {str(e)}"
+        return news_item
+
+
+# -------------------------------
+# JSON Serialization (Remove Embedding)
+# -------------------------------
+
+def remove_embedding_and_serialize(item) -> str:
+    """
+    Remove embedding field and convert to JSON string.
+    Handles both Python dict and Flink Map types.
+    """
+    # Convert to dict if it's a Flink Map type (not a regular Python dict)
+    if not isinstance(item, dict):
+        # Convert Flink Map to Python dict
+        item = dict(item)
+    
+    # Create a copy without the embedding field
+    filtered_item = {k: v for k, v in item.items() if k != "embedding"}
+    return json.dumps(filtered_item)
 
 
 # -------------------------------
@@ -163,24 +280,25 @@ def main():
         stream.map(parse_news)
               .filter(lambda item: item is not None)
     )
-    logger.info("✓ Parsing configured")
+    logger.info("✓ Parsing configured - processing all news sources")
 
-    # Filter Only Reuters
-    reuters_only = parsed_news.filter(
-        lambda item: item.get("source", "").lower() == "reuters"
-    )
-    logger.info("✓ Reuters filter configured")
-
-    # Semantic matching with embeddings
-    processed = reuters_only.map(
+    # Step A: Generate embeddings for all news
+    embedded = parsed_news.map(
         semantic_market_matching,
         output_type=Types.MAP(Types.STRING(), Types.STRING())
     )
-    logger.info("✓ Semantic matching logic configured")
+    logger.info("✓ Semantic matching (embedding generation) configured")
 
-    # Convert back to JSON string
-    processed_strings = processed.map(
-        lambda item: json.dumps(item),
+    # Step B: Store in database
+    stored = embedded.map(
+        store_news_in_db,
+        output_type=Types.MAP(Types.STRING(), Types.STRING())
+    )
+    logger.info("✓ Database storage configured")
+
+    # Convert back to JSON string (remove embedding to reduce message size)
+    processed_strings = stored.map(
+        remove_embedding_and_serialize,
         output_type=Types.STRING()
     )
 
