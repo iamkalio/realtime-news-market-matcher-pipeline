@@ -69,7 +69,7 @@ services:
       echo 'Waiting for database to be ready...' &&
       until pg_isready -h pgvector -U postgres; do sleep 1; done &&
       echo 'Checking if schema exists...' &&
-      SCHEMA_EXISTS=$$(psql -h pgvector -U postgres -d news_match -tAc \"SELECT EXISTS(SELECT FROM information_schema.tables WHERE table_name = 'markets' AND table_schema = 'public');\") &&
+      SCHEMA_EXISTS=$$(psql -h pgvector -U postgres -d news_match -tAc \"SELECT EXISTS(SELECT FROM information_schema.tables WHERE table_name = 'news' AND table_schema = 'public');\") &&
       if [ \"$$SCHEMA_EXISTS\" = 't' ]; then
         echo 'Schema already exists. Skipping migration.';
       else

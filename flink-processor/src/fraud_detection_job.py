@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, Optional
 import requests
 import psycopg2
+from psycopg2 import pool
 
 from pyflink.common.serialization import SimpleStringSchema
 from pyflink.common.typeinfo import Types
@@ -126,35 +127,34 @@ def semantic_market_matching(news_item: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # -------------------------------
-# Database Storage Function
+# Database Storage Function with Connection Pooling
 # -------------------------------
-# Module-level connection (created on first use, reused for subsequent calls)
-_db_conn = None
-_db_cursor = None
+# Module-level connection pool (created on first use, reused for subsequent calls)
+_db_pool = None
 
-def _get_db_connection():
-    """Get or create database connection (lazy initialization)."""
-    global _db_conn, _db_cursor
-    if _db_conn is None or _db_conn.closed:
+def _get_db_pool():
+    """Get or create connection pool (lazy initialization)."""
+    global _db_pool
+    if _db_pool is None:
         try:
-            _db_conn = psycopg2.connect(
+            _db_pool = pool.ThreadedConnectionPool(
+                minconn=1,      # Minimum connections in pool
+                maxconn=10,     # Maximum connections (adjust based on Flink parallelism)
                 host=PG_HOST,
                 port=PG_PORT,
                 database=PG_DATABASE,
                 user=PG_USER,
                 password=PG_PASSWORD
             )
-            _db_conn.autocommit = True
-            _db_cursor = _db_conn.cursor()
-            logger.info("✓ Postgres connection opened")
+            logger.info("✓ Postgres connection pool created (min=1, max=10)")
         except Exception as e:
-            logger.error(f"✗ Failed to open Postgres connection: {e}")
+            logger.error(f"✗ Failed to create connection pool: {e}")
             raise
-    return _db_conn, _db_cursor
+    return _db_pool
 
 def store_news_in_db(news_item: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Store news and embeddings in PostgreSQL/pgvector.
+    Store news and embeddings in PostgreSQL/pgvector using connection pool.
     
     Assumes news_item contains:
         - source
@@ -163,9 +163,13 @@ def store_news_in_db(news_item: Dict[str, Any]) -> Dict[str, Any]:
         - headline (or news)
         - embedding (list of floats)
     """
+    db_pool = _get_db_pool()
+    conn = None
     try:
-        # Get database connection
-        conn, cursor = _get_db_connection()
+        # Get connection from pool
+        conn = db_pool.getconn()
+        conn.autocommit = True
+        cursor = conn.cursor()
         
         # Extract fields with fallbacks
         source = news_item.get("source")
@@ -178,53 +182,72 @@ def store_news_in_db(news_item: Dict[str, Any]) -> Dict[str, Any]:
         if not all([source, published_date, published_time, headline]):
             logger.warning(f"Missing required fields in news_item: {news_item}")
             news_item["db_status"] = "failed_missing_fields"
+            db_pool.putconn(conn)
             return news_item
         
         if not embedding:
             logger.warning(f"No embedding found in news_item")
             news_item["db_status"] = "failed_no_embedding"
+            db_pool.putconn(conn)
             return news_item
         
-        # 1. Insert the main news into markets
-        insert_markets_sql = """
-        INSERT INTO markets (source, published_date, published_time, headline)
+        # 1. Insert the main news into news
+        insert_news_sql = """
+        INSERT INTO news (source, published_date, published_time, headline)
         VALUES (%s, %s, %s, %s)
         RETURNING id;
         """
         
         cursor.execute(
-            insert_markets_sql,
+            insert_news_sql,
             (source, published_date, published_time, headline)
         )
         
-        market_id = cursor.fetchone()[0]
+        news_id = cursor.fetchone()[0]
         
-        # 2. Insert embedding into market_embeddings
+        # 2. Insert embedding into news_embeddings
         # Convert list to string format for pgvector: '[0.1,0.2,0.3]'
         embedding_str = '[' + ','.join(map(str, embedding)) + ']'
         
         insert_embedding_sql = """
-        INSERT INTO market_embeddings (market_id, embedding)
+        INSERT INTO news_embeddings (news_id, embedding)
         VALUES (%s, %s::vector);
         """
         
         cursor.execute(
             insert_embedding_sql,
-            (market_id, embedding_str)
+            (news_id, embedding_str)
         )
         
-        logger.info(f"✓ Saved news + embedding into DB (id={market_id}, dim={len(embedding)})")
+        logger.info(f"✓ Saved news + embedding into DB (id={news_id}, dim={len(embedding)})")
         
         # Enrich news_item with database info
-        news_item["market_id"] = market_id
+        news_item["news_id"] = news_id
         news_item["db_status"] = "saved"
+        
+        # Return connection to pool
+        db_pool.putconn(conn)
+        conn = None  # Prevent closing in finally
         
         return news_item
         
     except Exception as e:
         logger.error(f"✗ Error saving to database: {e}")
         news_item["db_status"] = f"failed: {str(e)}"
+        # Return connection to pool (close if bad)
+        if conn:
+            try:
+                db_pool.putconn(conn, close=True)
+            except:
+                pass
         return news_item
+    finally:
+        # Ensure connection is returned to pool
+        if conn:
+            try:
+                db_pool.putconn(conn)
+            except:
+                pass
 
 
 # -------------------------------
