@@ -1,13 +1,14 @@
 import os
 from contextlib import asynccontextmanager
-from typing import List
+from typing import List, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from kafka_consumer import KafkaDataStore, start_kafka_consumers
-from models import NewsItem, ProcessedNews, StatsResponse
+from models import NewsItem, ProcessedNews, StatsResponse, Market
+from db import get_markets, get_market_stats
 
 # Global data store
 data_store = KafkaDataStore(max_size=1000)
@@ -50,6 +51,7 @@ async def root():
         "endpoints": {
             "news": "/api/news",
             "processed": "/api/processed",
+            "markets": "/api/markets",
             "stats": "/api/stats",
             "stream": "/ws",
         },
@@ -70,10 +72,22 @@ async def get_processed_news(limit: int = 100):
     return processed
 
 
+@app.get("/api/markets", response_model=List[Market])
+async def get_markets_endpoint(
+    limit: int = Query(100, ge=1, le=1000),
+    is_resolved: Optional[bool] = Query(None, description="Filter by resolved status")
+):
+    """Get list of saved markets from database."""
+    markets = get_markets(limit=limit, is_resolved=is_resolved)
+    return markets
+
+
 @app.get("/api/stats", response_model=StatsResponse)
 async def get_stats():
-    """Get pipeline statistics."""
+    """Get pipeline statistics including market stats."""
     stats = data_store.get_stats()
+    market_stats = get_market_stats()
+    stats["markets"] = market_stats
     return stats
 
 

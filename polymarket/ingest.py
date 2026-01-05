@@ -80,10 +80,13 @@ def upsert_market(cursor, market: Dict) -> Optional[int]:
         cursor.execute(sql, ("polymarket", slug, question, is_resolved))
         result = cursor.fetchone()
         if result:
-            return result.get("id") if isinstance(result, dict) else result[0]
+            if isinstance(result, dict) or hasattr(result, 'get'):
+                return result.get("id")
+            else:
+                return result[0] if result else None
         return None
     except Exception as e:
-        logger.error(f"Error upserting market {slug}: {e}")
+        logger.error(f"Error upserting market {slug}: {e}", exc_info=True)
         return None
 
 
@@ -120,31 +123,52 @@ def run_ingestion():
     
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            # Check if markets table exists
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_schema = 'public' 
+                    AND table_name = 'markets'
+                ) as exists;
+            """)
+            result = cursor.fetchone()
+            table_exists = result.get("exists") if hasattr(result, "get") else result[0]
+            
+            if not table_exists:
+                logger.warning("Markets table does not exist yet, waiting for migration...")
+                return
+            
             for market in markets:
-                slug = market.get("market_slug") or market.get("slug")
-                question = market.get("question")
-                
-                if not question or not slug:
-                    error_count += 1
-                    continue
-                
-                embedding = generate_embedding(question)
-                if not embedding:
-                    error_count += 1
-                    continue
-                
-                market_id = upsert_market(cursor, market)
-                if not market_id:
-                    error_count += 1
-                    continue
-                
-                if upsert_market_embedding(cursor, market_id, embedding):
-                    logger.info(f"Saved market: {slug} (id={market_id})")
-                    success_count += 1
-                else:
+                try:
+                    slug = market.get("market_slug") or market.get("slug")
+                    question = market.get("question")
+                    
+                    if not question or not slug:
+                        error_count += 1
+                        continue
+                    
+                    embedding = generate_embedding(question)
+                    if not embedding:
+                        error_count += 1
+                        continue
+                    
+                    market_id = upsert_market(cursor, market)
+                    if not market_id:
+                        logger.warning(f"Failed to get market_id for {slug}")
+                        error_count += 1
+                        continue
+                    
+                    if upsert_market_embedding(cursor, market_id, embedding):
+                        logger.info(f"Saved market: {slug} (id={market_id})")
+                        success_count += 1
+                    else:
+                        error_count += 1
+                except Exception as e:
+                    logger.error(f"Error processing market {market.get('market_slug', 'unknown')}: {e}", exc_info=True)
                     error_count += 1
     except Exception as e:
-        logger.error(f"Error during ingestion: {e}")
+        import traceback
+        logger.error(f"Error during ingestion: {e}\n{traceback.format_exc()}")
         error_count += 1
     finally:
         conn.close()

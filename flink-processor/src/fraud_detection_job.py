@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 import requests
 import psycopg2
 from psycopg2 import pool
+from psycopg2 import OperationalError
 
 from pyflink.common.serialization import SimpleStringSchema
 from pyflink.common.typeinfo import Types
@@ -34,12 +35,16 @@ PG_DATABASE = os.getenv("PG_DATABASE", "news_match")
 PG_USER = os.getenv("PG_USER", "postgres")
 PG_PASSWORD = os.getenv("PG_PASSWORD", "postgres")
 
+# Matching configuration
+MIN_SIMILARITY_THRESHOLD = float(os.getenv("MIN_SIMILARITY_THRESHOLD", "0.5"))
+
 logger.info("Configuration:")
 logger.info(f"  Kafka Bootstrap: {KAFKA_BOOTSTRAP}")
 logger.info(f"  Source Topic: {NEWS_SOURCE_TOPIC}")
 logger.info(f"  Sink Topic: {PROCESSED_NEWS_TOPIC}")
 logger.info(f"  Embedding Service: {EMBEDDING_SERVICE_URL}")
 logger.info(f"  Database: {PG_HOST}:{PG_PORT}/{PG_DATABASE}")
+logger.info(f"  Min Similarity Threshold: {MIN_SIMILARITY_THRESHOLD}")
 
 
 # -------------------------------
@@ -93,10 +98,7 @@ def generate_embedding(text: str) -> Optional[list]:
 # Semantic Market Matching
 # -------------------------------
 def semantic_market_matching(news_item: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Generate embedding and prepare for database storage.
-    """
-    # Get the news text (could be from different fields)
+    """Generate embedding and match to markets."""
     headline = news_item.get("headline") or news_item.get("news", "")
     
     if not headline:
@@ -105,7 +107,6 @@ def semantic_market_matching(news_item: Dict[str, Any]) -> Dict[str, Any]:
         news_item["embedding_status"] = "no_text"
         return news_item
     
-    # Generate embedding
     embedding = generate_embedding(headline)
     
     if embedding is None:
@@ -114,14 +115,27 @@ def semantic_market_matching(news_item: Dict[str, Any]) -> Dict[str, Any]:
         news_item["embedding_status"] = "failed"
         return news_item
     
-    # Successfully generated embedding
-    logger.info(f"Generated embedding (dim={len(embedding)}) for: {headline[:50]}...")
-    
-    # Store embedding in news_item for database insertion
     news_item["embedding"] = embedding
     news_item["embedding_dim"] = len(embedding)
     news_item["embedding_status"] = "success"
-    news_item["matched_market"] = None  # Will be replaced with actual DB query later
+    
+    match = match_market(embedding)
+    if match:
+        similarity = match["similarity"]
+        # Double-check threshold here as a safety measure
+        if similarity >= MIN_SIMILARITY_THRESHOLD:
+            news_item["matched_market"] = match["slug"]
+            news_item["matched_market_id"] = match["market_id"]
+            news_item["matched_market_question"] = match["question"]
+            news_item["match_score"] = similarity
+            logger.info(f"✓ Matched to market: {match['slug']} (score: {similarity:.3f}, threshold: {MIN_SIMILARITY_THRESHOLD})")
+        else:
+            logger.warning(f"✗ Match rejected: {match['slug']} (score: {similarity:.3f} < threshold: {MIN_SIMILARITY_THRESHOLD})")
+            news_item["matched_market"] = None
+            news_item["match_score"] = None
+    else:
+        news_item["matched_market"] = None
+        news_item["match_score"] = None
     
     return news_item
 
@@ -138,19 +152,95 @@ def _get_db_pool():
     if _db_pool is None:
         try:
             _db_pool = pool.ThreadedConnectionPool(
-                minconn=1,      # Minimum connections in pool
-                maxconn=10,     # Maximum connections (adjust based on Flink parallelism)
+                minconn=1,
+                maxconn=10,
                 host=PG_HOST,
                 port=PG_PORT,
                 database=PG_DATABASE,
                 user=PG_USER,
                 password=PG_PASSWORD
             )
-            logger.info("✓ Postgres connection pool created (min=1, max=10)")
+            logger.info("Postgres connection pool created")
         except Exception as e:
-            logger.error(f"✗ Failed to create connection pool: {e}")
+            logger.error(f"Failed to create connection pool: {e}")
             raise
     return _db_pool
+
+
+def match_market(embedding: list) -> Optional[Dict[str, Any]]:
+    """Find best matching market for a news embedding using cosine similarity."""
+    db_pool = _get_db_pool()
+    conn = None
+    try:
+        conn = db_pool.getconn()
+        cursor = conn.cursor()
+        
+        # Check if both tables exist
+        cursor.execute("""
+            SELECT 
+                EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'markets') as markets_exists,
+                EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'market_embeddings') as embeddings_exists;
+        """)
+        result = cursor.fetchone()
+        markets_exists = result[0]
+        embeddings_exists = result[1]
+        
+        if not markets_exists or not embeddings_exists:
+            logger.debug("Markets tables do not exist yet, skipping match")
+            return None
+        
+        # Check if there are any markets with embeddings
+        cursor.execute("SELECT COUNT(*) FROM market_embeddings;")
+        count = cursor.fetchone()[0]
+        if count == 0:
+            logger.debug("No market embeddings available yet, skipping match")
+            return None
+        
+        embedding_str = '[' + ','.join(map(str, embedding)) + ']'
+        
+        sql = """
+        SELECT
+            m.id,
+            m.slug,
+            m.question,
+            1 - (me.embedding <=> %s::vector) AS similarity
+        FROM market_embeddings me
+        JOIN markets m ON m.id = me.market_id
+        WHERE m.is_resolved = false
+        ORDER BY me.embedding <=> %s::vector
+        LIMIT 1;
+        """
+        
+        cursor.execute(sql, (embedding_str, embedding_str))
+        row = cursor.fetchone()
+        
+        if not row:
+            return None
+        
+        similarity = float(row[3])
+        
+        # Only return match if similarity is above threshold (default 0.5 = 50% similarity)
+        if similarity < MIN_SIMILARITY_THRESHOLD:
+            logger.debug(f"Match similarity {similarity:.3f} below threshold {MIN_SIMILARITY_THRESHOLD}, rejecting match to '{row[1]}'")
+            return None
+        
+        # Log successful match that passed threshold
+        logger.info(f"✓ Match found: '{row[1]}' (similarity: {similarity:.3f}, threshold: {MIN_SIMILARITY_THRESHOLD}, question: '{row[2][:60]}...')")
+        return {
+            "market_id": row[0],
+            "slug": row[1],
+            "question": row[2],
+            "similarity": similarity
+        }
+    except psycopg2.OperationalError as e:
+        logger.warning(f"Database connection error during market matching: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error matching market: {e}")
+        return None
+    finally:
+        if conn:
+            db_pool.putconn(conn)
 
 def store_news_in_db(news_item: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -251,6 +341,20 @@ def store_news_in_db(news_item: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # -------------------------------
+# Filtering Helpers
+# -------------------------------
+
+def has_matched_market(item) -> bool:
+    """Check if item has a matched market (handles both dict and Flink Map types)."""
+    if item is None:
+        return False
+    # Convert to dict if it's a Flink Map type
+    if not isinstance(item, dict):
+        item = dict(item)
+    return item.get("matched_market") is not None
+
+
+# -------------------------------
 # JSON Serialization (Remove Embedding)
 # -------------------------------
 
@@ -319,8 +423,12 @@ def main():
     )
     logger.info("✓ Database storage configured")
 
+    # Step C: Filter to only keep news that matched a market
+    matched_only = stored.filter(has_matched_market)
+    logger.info("✓ Filtering configured - only matched news will be sent to processed_news")
+
     # Convert back to JSON string (remove embedding to reduce message size)
-    processed_strings = stored.map(
+    processed_strings = matched_only.map(
         remove_embedding_and_serialize,
         output_type=Types.STRING()
     )
