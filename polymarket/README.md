@@ -41,36 +41,6 @@ The Polymarket ingestion pipeline:
 - `embedding`: Vector(384) - same dimension as news embeddings
 - `created_at`: Timestamp
 
-## Configuration
-
-Environment variables:
-- `PG_HOST`: Database host (default: `pgvector`)
-- `PG_PORT`: Database port (default: `5432`)
-- `PG_DATABASE`: Database name (default: `news_match`)
-- `PG_USER`: Database user (default: `postgres`)
-- `PG_PASSWORD`: Database password (default: `postgres`)
-- `EMBEDDING_SERVICE_URL`: Embedding service endpoint (default: `http://embedding-service:8001/embed`)
-- `POLYMARKET_BASE_URL`: Polymarket API base URL (default: `https://clob.polymarket.com`)
-- `POLYMARKET_FETCH_LIMIT`: Number of markets to fetch (default: `20`)
-- `POLYMARKET_INTERVAL_SECONDS`: Ingestion interval in seconds (default: `120` = 2 minutes)
-
-## Usage
-
-### Running with Docker Compose
-
-The service is automatically started with `docker-compose up`:
-
-```bash
-docker-compose up polymarket-ingest
-```
-
-### Running locally
-
-```bash
-pip install -r requirements.txt
-python ingest.py
-```
-
 ## Features
 
 - **Idempotent**: Uses `ON CONFLICT` to prevent duplicates
@@ -85,4 +55,4 @@ python ingest.py
 - Add market lifecycle states
 - Re-embed markets when descriptions change
 - Add alerts/countdowns for market resolution
-
+  

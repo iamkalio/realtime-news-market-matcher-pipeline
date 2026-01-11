@@ -1,3 +1,32 @@
+x-common-kafka: &common-kafka
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+x-common-db: &common-db
+  PG_HOST: pgvector
+  PG_PORT: 5432
+  PG_DATABASE: news_match
+  PG_USER: postgres
+  PG_PASSWORD: postgres
+
+x-common-kafka-db: &common-kafka-db
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  PG_HOST: pgvector
+  PG_PORT: 5432
+  PG_DATABASE: news_match
+  PG_USER: postgres
+  PG_PASSWORD: postgres
+
+x-common-flink-env: &common-flink-env
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  KAFKA_SOURCE_TOPIC: news_stream
+  KAFKA_SINK_TOPIC: processed_news
+  EMBEDDING_SERVICE_URL: http://embedding-service:8001/embed
+  PG_HOST: pgvector
+  PG_PORT: 5432
+  PG_DATABASE: news_match
+  PG_USER: postgres
+  PG_PASSWORD: postgres
+
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
@@ -20,9 +49,7 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
 
-  # ----------------------------
   # Create updated Kafka topics
-  # ----------------------------
   kafka-setup:
     image: confluentinc/cp-kafka:7.6.0
     depends_on:
@@ -36,9 +63,7 @@ services:
       sleep 2"
     restart: "no"
 
-  # ----------------------------
   # PGVECTOR DATABASE
-  # ----------------------------
   pgvector:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
@@ -56,9 +81,7 @@ services:
       timeout: 5s
       retries: 10
 
-  # ----------------------------
   # Database Migration Setup
-  # ----------------------------
   db-migration:
     image: pgvector/pgvector:pg16
     depends_on:
@@ -83,9 +106,7 @@ services:
       PGPASSWORD: postgres
     restart: "no"
 
-  # ----------------------------
   # PRODUCER → sends news_stream
-  # ----------------------------
   kafka-producer:
     build:
       context: ./kafka-producer
@@ -93,14 +114,12 @@ services:
       kafka-setup:
         condition: service_completed_successfully
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      <<: *common-kafka
       KAFKA_TOPIC: news_stream
       PRODUCER_INTERVAL_SECONDS: 4
     restart: unless-stopped
 
-  # ----------------------------
   # Embedding Service (Local - SentenceTransformers)
-  # ----------------------------
   embedding-service:
     build:
       context: ./embedding-service
@@ -116,9 +135,7 @@ services:
       retries: 5
       start_period: 30s
 
-  # ----------------------------
-  # FLINK ---- JobManager
-  # ----------------------------
+  # FLINK -- JobManager
   jobmanager:
     build:
       context: ./flink-processor
@@ -136,15 +153,7 @@ services:
       - "6123:6123"
     command: jobmanager
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      KAFKA_SOURCE_TOPIC: news_stream
-      KAFKA_SINK_TOPIC: processed_news
-      EMBEDDING_SERVICE_URL: http://embedding-service:8001/embed
-      PG_HOST: pgvector
-      PG_PORT: 5432
-      PG_DATABASE: news_match
-      PG_USER: postgres
-      PG_PASSWORD: postgres
+      <<: *common-flink-env
       JOB_MANAGER_RPC_ADDRESS: jobmanager
       JAVA_TOOL_OPTIONS: >
         -Dlog4j.configuration=file:///opt/flink/conf/log4j.properties
@@ -156,9 +165,7 @@ services:
     hostname: jobmanager
     restart: unless-stopped
 
-  # ----------------------------
-  # FLINK ---- TaskManager
-  # ----------------------------
+  # FLINK -- TaskManager
   taskmanager:
     build:
       context: ./flink-processor
@@ -173,15 +180,7 @@ services:
         condition: service_healthy
     command: taskmanager
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      KAFKA_SOURCE_TOPIC: news_stream
-      KAFKA_SINK_TOPIC: processed_news
-      EMBEDDING_SERVICE_URL: http://embedding-service:8001/embed
-      PG_HOST: pgvector
-      PG_PORT: 5432
-      PG_DATABASE: news_match
-      PG_USER: postgres
-      PG_PASSWORD: postgres
+      <<: *common-flink-env
       MIN_SIMILARITY_THRESHOLD: 0.5
       JOB_MANAGER_RPC_ADDRESS: jobmanager
       JAVA_TOOL_OPTIONS: >
@@ -194,9 +193,7 @@ services:
     hostname: taskmanager
     restart: unless-stopped
 
-  # ----------------------------
-  # Submit Flink Job Automatically
-  # ----------------------------
+  # Submit Flink Job
   job-submitter:
     build:
       context: ./flink-processor
@@ -213,23 +210,13 @@ services:
         condition: service_healthy
     command: python3 /opt/flink/usrlib/submit_job.py
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      KAFKA_SOURCE_TOPIC: news_stream
-      KAFKA_SINK_TOPIC: processed_news
-      EMBEDDING_SERVICE_URL: http://embedding-service:8001/embed
-      PG_HOST: pgvector
-      PG_PORT: 5432
-      PG_DATABASE: news_match
-      PG_USER: postgres
-      PG_PASSWORD: postgres
+      <<: *common-flink-env
       MIN_SIMILARITY_THRESHOLD: 0.5
     volumes:
       - ./flink-processor/src:/opt/flink/usrlib:ro
     restart: "no"
 
-  # ----------------------------
   # API Service
-  # ----------------------------
   api-service:
     build:
       context: ./api-service
@@ -243,18 +230,11 @@ services:
     ports:
       - "8000:8000"
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      <<: *common-kafka-db
       PORT: 8000
-      PG_HOST: pgvector
-      PG_PORT: 5432
-      PG_DATABASE: news_match
-      PG_USER: postgres
-      PG_PASSWORD: postgres
     restart: unless-stopped
 
-  # ----------------------------
   # Polymarket Ingestion Service
-  # ----------------------------
   polymarket-ingest:
     build:
       context: ./polymarket
@@ -266,20 +246,14 @@ services:
       embedding-service:
         condition: service_healthy
     environment:
-      PG_HOST: pgvector
-      PG_PORT: 5432
-      PG_DATABASE: news_match
-      PG_USER: postgres
-      PG_PASSWORD: postgres
+      <<: *common-db
       EMBEDDING_SERVICE_URL: http://embedding-service:8001/embed
       POLYMARKET_BASE_URL: https://clob.polymarket.com
       POLYMARKET_FETCH_LIMIT: 20
-      POLYMARKET_INTERVAL_SECONDS: 120  # 2 minutes
+      POLYMARKET_INTERVAL_SECONDS: 120
     restart: unless-stopped
 
-  # ----------------------------
   # Database Visualization - Adminer
-  # ----------------------------
   adminer:
     image: adminer:latest
     depends_on:
