@@ -37,16 +37,6 @@ Stop everything:
 docker compose down
 ```
 
-## Configuration
-
-Key environment variables (set in `docker-compose.yml`):
-
-- `KAFKA_SOURCE_TOPIC`: Input topic (default: `news_stream`)
-- `KAFKA_SINK_TOPIC`: Output topic (default: `processed_news`)
-- `EMBEDDING_SERVICE_URL`: Embedding service endpoint
-- `PG_HOST`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`: Database connection
-- `MIN_SIMILARITY_THRESHOLD`: Minimum similarity score to match (default: 0.5)
-
 ## Project Structure
 
 ```
