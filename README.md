@@ -2,6 +2,10 @@
 
 A real-time news processing system that matches news articles to prediction markets using semantic similarity. Built with Apache Flink, Kafka, and PostgreSQL with pgvector.
 
+## Architecture
+
+![Architecture Diagram](assets/architecture.png)
+
 ## What It Does
 
 The pipeline reads news articles from Kafka, generates embeddings for headlines, and matches them to prediction markets using cosine similarity. Only news that matches above a similarity threshold gets forwarded to the output topic.
