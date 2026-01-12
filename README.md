@@ -79,21 +79,6 @@ Flink web UI:
 open http://localhost:8081
 ```
 
-## Troubleshooting
-
-**JobManager keeps restarting?**
-- Check `flink-conf.yaml` has memory settings configured
-- Verify config file is mounted: `docker compose exec jobmanager cat /opt/flink/conf/flink-conf.yaml`
-
-**No data flowing?**
-- Check logs: `docker compose logs taskmanager | grep -i error`
-- Verify Kafka topics exist: `docker compose exec kafka kafka-topics --list --bootstrap-server kafka:9092`
-- Check embedding service is healthy: `curl http://localhost:8001/health`
-
-**Python errors?**
-- Check syntax: `docker compose exec taskmanager python3 -m py_compile /opt/flink/usrlib/news_processing_job.py`
-- Check imports: `docker compose logs taskmanager | grep Traceback`
-
 ## Technologies
 
 - **Apache Flink 1.18.1**: Stream processing engine
