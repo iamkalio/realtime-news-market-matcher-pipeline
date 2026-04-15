@@ -9,7 +9,7 @@ DB_PORT=5432
 
 CONTAINER_NAME=pgvector
 
-MIGRATIONS_DIR=./migrations
+MIGRATIONS_DIR=./db/migrations
 
 ### ----------------------
 ### Help
@@ -60,8 +60,8 @@ migrate-new:
 	echo "Created $$filename"
 
 db-reset:
-	@echo "🔻 Dropping database..."
+	@echo "Dropping database..."
 	docker exec $(CONTAINER_NAME) dropdb -U $(DB_USER) --if-exists $(DB_NAME)
-	@echo "🔺 Creating database..."
+	@echo "Creating database..."
 	docker exec $(CONTAINER_NAME) createdb -U $(DB_USER) $(DB_NAME)
 	make migrate

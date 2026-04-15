@@ -13,7 +13,7 @@ JOBMANAGER_URL = "http://jobmanager:8081/v1/overview"
 HEALTH_CHECK_MAX_RETRIES = 30
 HEALTH_CHECK_TIMEOUT = 2
 HEALTH_CHECK_INTERVAL = 2
-JOB_FILE = "/opt/flink/usrlib/news_processing_job.py"
+JOB_FILE = "/opt/flink/usrlib/job.py"
 FLINK_LIB_DIR = Path("/opt/flink/lib")
 
 
