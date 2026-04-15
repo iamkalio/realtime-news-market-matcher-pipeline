@@ -49,7 +49,6 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
 
-  # Create updated Kafka topics
   kafka-setup:
     image: confluentinc/cp-kafka:7.6.0
     depends_on:
@@ -101,7 +100,7 @@ services:
       psql -h pgvector -U postgres -d news_match -c \"SELECT 'news' as table_name, COUNT(*) as count FROM news UNION ALL SELECT 'markets', COUNT(*) FROM markets;\" &&
       echo 'Migrations completed successfully'"
     volumes:
-      - ./migrations:/migrations:ro
+      - ./db/migrations:/migrations:ro
     environment:
       PGPASSWORD: postgres
     restart: "no"
@@ -109,7 +108,7 @@ services:
   # PRODUCER → sends news_stream
   kafka-producer:
     build:
-      context: ./kafka-producer
+      context: ./services/news-producer
     depends_on:
       kafka-setup:
         condition: service_completed_successfully
@@ -122,7 +121,7 @@ services:
   # Embedding Service (Local - SentenceTransformers)
   embedding-service:
     build:
-      context: ./embedding-service
+      context: ./services/embedding/local
     ports:
       - "8001:8001"
     environment:
@@ -138,7 +137,7 @@ services:
   # FLINK -- JobManager
   jobmanager:
     build:
-      context: ./flink-processor
+      context: ./services/stream-processor
     depends_on:
       kafka-setup:
         condition: service_completed_successfully
@@ -158,8 +157,8 @@ services:
       JAVA_TOOL_OPTIONS: >
         -Dlog4j.configuration=file:///opt/flink/conf/log4j.properties
     volumes:
-      - ./flink-processor/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
-      - ./flink-processor/src:/opt/flink/usrlib:ro
+      - ./services/stream-processor/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
+      - ./services/stream-processor:/opt/flink/usrlib:ro
       - flink-checkpoints:/flink-checkpoints
       - flink-savepoints:/flink-savepoints
     hostname: jobmanager
@@ -168,7 +167,7 @@ services:
   # FLINK -- TaskManager
   taskmanager:
     build:
-      context: ./flink-processor
+      context: ./services/stream-processor
     depends_on:
       jobmanager:
         condition: service_started
@@ -186,8 +185,8 @@ services:
       JAVA_TOOL_OPTIONS: >
         -Dlog4j.configuration=file:///opt/flink/conf/log4j.properties
     volumes:
-      - ./flink-processor/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
-      - ./flink-processor/src:/opt/flink/usrlib:ro
+      - ./services/stream-processor/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
+      - ./services/stream-processor:/opt/flink/usrlib:ro
       - flink-checkpoints:/flink-checkpoints
       - flink-savepoints:/flink-savepoints
     hostname: taskmanager
@@ -196,7 +195,7 @@ services:
   # Submit Flink Job
   job-submitter:
     build:
-      context: ./flink-processor
+      context: ./services/stream-processor
     depends_on:
       jobmanager:
         condition: service_started
@@ -208,18 +207,18 @@ services:
         condition: service_completed_successfully
       embedding-service:
         condition: service_healthy
-    command: python3 /opt/flink/usrlib/submit_job.py
+    command: python3 /opt/flink/usrlib/submit.py
     environment:
       <<: *common-flink-env
       MIN_SIMILARITY_THRESHOLD: 0.5
     volumes:
-      - ./flink-processor/src:/opt/flink/usrlib:ro
+      - ./services/stream-processor:/opt/flink/usrlib:ro
     restart: "no"
 
   # API Service
   api-service:
     build:
-      context: ./api-service
+      context: ./services/api
     depends_on:
       kafka-setup:
         condition: service_completed_successfully
@@ -237,7 +236,7 @@ services:
   # Polymarket Ingestion Service
   polymarket-ingest:
     build:
-      context: ./polymarket
+      context: ./services/market-ingest
     depends_on:
       pgvector:
         condition: service_healthy
